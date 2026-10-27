@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Master Sword – Temple of Time</title>
+<style>
+:root{--bg:#05030a;--ink:#d8f7ee;--line:rgba(120,255,214,.28);box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;margin:0;background:var(--bg)}
+body{display:flex;align-items:center;justify-content:center;overflow:hidden;font-family:Georgia,"Times New Roman",serif;color:var(--ink)}
+#stage{position:relative;width:min(100vw,calc(100dvh * 4 / 3));aspect-ratio:4/3;max-height:100%;border:2px solid #1a1525;background:#000}
+canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+canvas:active{cursor:grabbing}
+#hud{position:absolute;top:2.5%;left:2.5%;padding:.5em .8em;font-size:clamp(10px,1.8vw,15px);line-height:1.45;background:linear-gradient(#fff,#dce6ee);color:#2a3a46;border:2px solid #b8c6d0;border-radius:16px;box-shadow:0 2px 10px rgba(0,0,0,.5);pointer-events:none}
+#hud b{font-weight:normal;font-style:italic;font-size:1.15em}
+#hud span{opacity:.75}
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="c" width="640" height="480" aria-label="Rotating 3D Master Sword in its pedestal"></canvas>
+  <div id="hud"><b>Master Sword, Temple of Time</b><br><span>Drag to orbit, scroll to zoom</span><br><span>Loop <span id="tm">0.00</span> / 8.00s</span></div>
+</div>
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d'),W=640,H=480,F=660,tmEl=document.getElementById('tm');
+const LOOP=8,TAU=Math.PI*2,LIGHT=norm([.5,.8,.35]);
+function norm(v){const l=Math.hypot(v[0],v[1],v[2])||1;return[v[0]/l,v[1]/l,v[2]/l]}
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]],dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+
+/* ---------- mesh: convex pieces built from stacked rings ---------- */
+const faces=[];let dy=0,sc=1;
+function addFace(vs,col,c,bias){
+  let n=norm(cross(sub(vs[1],vs[0]),sub(vs[2],vs[0])));
+  const fc=[0,1,2].map(i=>vs.reduce((s,v)=>s+v[i],0)/vs.length);
+  if(dot(n,sub(fc,c))<0)n=[-n[0],-n[1],-n[2]]; // orient outward from piece centre
+  const d=Math.max(0,dot(n,LIGHT)),amb=.38;
+  faces.push({vs,col,n,fc,bias:bias||0,sh:amb+(1-amb)*d});
+}
+// rings: array of vertex rings (same length) or a single-vertex ring (tip)
+function piece(rings,col,rot){
+  if(rot)rings=rings.map(r=>r.map(p=>{const dx=p[0]-rot.x,dy=p[1]-rot.y,c=Math.cos(rot.a),s=Math.sin(rot.a);return[rot.x+dx*c-dy*s,rot.y+dx*s+dy*c,p[2]]}));
+  if(dy)rings=rings.map(r=>r.map(p=>[p[0],p[1]+dy,p[2]]));
+  if(sc!==1)rings=rings.map(r=>r.map(p=>[p[0]*sc,1+(p[1]-1)*sc,p[2]*sc]));
+  const all=rings.flat(),c=[0,1,2].map(i=>all.reduce((s,v)=>s+v[i],0)/all.length);
+  for(let i=0;i<rings.length-1;i++){
+    const a=rings[i],b=rings[i+1];
+    if(a.length===1){for(let j=0;j<b.length;j++)addFace([a[0],b[(j+1)%b.length],b[j]],col,c)}
+    else if(b.length===1){for(let j=0;j<a.length;j++)addFace([a[j],a[(j+1)%a.length],b[0]],col,c)}
+    else for(let j=0;j<a.length;j++){const k=(j+1)%a.length;addFace([a[j],a[k],b[k],b[j]],col,c)}
+  }
+  for(const r of [rings[0],rings[rings.length-1]]){
+    if(r.length>2){const rr=Math.max(...r.map(p=>Math.hypot(p[0]-c[0],p[2]-c[2])));addFace(r,col,c,rr)}
+  }
+}
+const circle=(n,r,y,o=0)=>Array.from({length:n},(_,i)=>{const a=o+i/n*TAU;return[Math.cos(a)*r,y,Math.sin(a)*r]});
+const cyl=(n,r0,r1,y0,y1,col,o=0)=>piece([circle(n,r0,y0,o),circle(n,r1,y1,o)],col);
+const rect=(w,d,y)=>[[-w,y,-d],[w,y,-d],[w,y,d],[-w,y,d]].map(p=>[...p]);
+function box(cx,cy,cz,w,h,d,col,a){
+  const r=[rect(w/2,d/2,-h/2),rect(w/2,d/2,h/2)].map(q=>q.map(p=>[p[0]+cx,p[1]+cy,p[2]+cz]));
+  piece(r,col,a?{a,x:cx,y:cy}:null);
+}
+const hexRing=(w,t,y)=>[[-w,0],[-w*.45,t],[w*.45,t],[w,0],[w*.45,-t],[-w*.45,-t]].map(p=>[p[0],y,p[1]]);
+
+/* floor + temple pedestal */
+const STONE=[96,92,120],STONE2=[78,74,100],GOLD=[232,190,74],BLUE=[44,82,190],STEEL=[208,224,240],GEM=[90,240,240];
+STEEL.m=.9;GOLD.m=.7;BLUE.m=.35;STONE.m=.06;STONE2.m=.06;GEM.e=1;
+cyl(40,3.4,3.3,0,.28,STONE2,0);
+cyl(36,2.5,2.4,.28,.58,STONE,0);
+cyl(32,1.55,1.45,.58,1.0,STONE2,0);
+for(let i=0;i<6;i++){const a=i/6*TAU+.5;const x=Math.cos(a)*7,z=Math.sin(a)*7;
+  piece([circle(16,.45,0).map(p=>[p[0]+x,0,p[2]+z]),circle(16,.38,2.6).map(p=>[p[0]+x,2.6,p[2]+z]),circle(16,.5,2.85).map(p=>[p[0]+x,2.85,p[2]+z])],STONE);}
+
+/* Master Sword: tip down in the stone, hilt up */
+sc=.25;piece([[[0,1.0,0]],hexRing(.2,.07,2.6),hexRing(.3,.085,4.4),hexRing(.32,.09,6.5)],STEEL);   // long blade
+dy=3.25;                                                                                     // lift hilt above the longer blade
+box(0,3.34,0,1.1,.2,.3,BLUE);                                                               // guard centre
+box(-.78,3.46,0,.7,.17,.25,BLUE,.42);box(.78,3.46,0,.7,.17,.25,BLUE,-.42);                 // guard wings
+box(-1.1,3.66,0,.28,.1,.2,GOLD,.9);box(1.1,3.66,0,.28,.1,.2,GOLD,-.9);                     // gold wing tips
+piece([[[0,3.48,.17]],[[.11,3.34,.17],[0,3.34,.28],[-.11,3.34,.17],[0,3.34,.06]].map(p=>p),[[0,3.2,.17]]],GEM); // gem
+cyl(16,.1,.1,3.44,4.16,[34,52,150],0);                                                      // grip
+cyl(16,.125,.125,3.5,3.56,GOLD,0);cyl(16,.125,.125,3.82,3.88,GOLD,0);cyl(16,.125,.125,4.1,4.16,GOLD,0);
+piece([circle(16,.11,4.16),circle(16,.2,4.3),circle(16,.12,4.48),[[0,4.6,0]]],GOLD);          // pommel
+
+/* ---------- camera ---------- */
+let D=10,dragA=0,dragP=0,clock=0,last=performance.now(),dragging=false,px=0,py=0;
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+cv.addEventListener('pointerdown',e=>{dragging=true;px=e.clientX;py=e.clientY;cv.setPointerCapture(e.pointerId)});
+cv.addEventListener('pointermove',e=>{if(!dragging)return;dragA-=(e.clientX-px)*.01;dragP=Math.max(-.2,Math.min(.9,dragP+(e.clientY-py)*.006));px=e.clientX;py=e.clientY});
+cv.addEventListener('pointerup',()=>dragging=false);cv.addEventListener('pointercancel',()=>dragging=false);
+cv.addEventListener('wheel',e=>{e.preventDefault();D=Math.max(7.5,Math.min(22,D+e.deltaY*.01))},{passive:false});
+
+function makeCam(a,p){
+  const tgt=[0,2,0],eye=[tgt[0]+Math.sin(a)*Math.cos(p)*D,tgt[1]+Math.sin(p)*D,tgt[2]+Math.cos(a)*Math.cos(p)*D];
+  const f=norm(sub(tgt,eye)),r=norm(cross(f,[0,1,0])),u=cross(r,f);
+  const proj=q=>{const v=sub(q,eye),z=dot(v,f);return{x:W/2+dot(v,r)/z*F,y:H/2-dot(v,u)/z*F,z}};
+  return{eye,proj};
+}
+const fog=(c,d,k)=>{const m=Math.min(.55,Math.max(0,(d-8)/26));return`rgb(${(c[0]*k*(1-m)+6*m)|0},${(c[1]*k*(1-m)+3*m)|0},${(c[2]*k*(1-m)+13*m)|0})`};
+
+/* particles, seamless over the 8s loop (integer revolutions / rises) */
+const parts=Array.from({length:44},(_,i)=>({ph:(i*.6180339)%1,r:1.2+((i*.37)%1)*4.6,m:1+(i%3),y0:(i*.271)%1}));
+
+function frame(now){
+  const dt=Math.min(.05,(now-last)/1000);last=now;
+  if(!dragging)clock=(clock+dt*(reduce?.25:1))%LOOP;
+  const t=clock/LOOP;tmEl.textContent=clock.toFixed(2);
+  const cam=makeCam(t*TAU+dragA,.3+Math.sin(t*TAU)*.05+dragP);
+
+  ctx.fillStyle='#06030d';ctx.fillRect(0,0,W,H);
+  // floor disc
+  const fc0=cam.proj([0,0,0]),fg=ctx.createRadialGradient(fc0.x,fc0.y,0,fc0.x,fc0.y,Math.max(1,300*10/D));fg.addColorStop(0,'#2b2252');fg.addColorStop(1,'#08050f');ctx.fillStyle=fg;ctx.beginPath();
+  for(let i=0;i<32;i++){const a=i/32*TAU,p=cam.proj([Math.cos(a)*12,0,Math.sin(a)*12]);if(p.z<.3)continue;i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y)}
+  ctx.closePath();ctx.fill();
+  const flat=(pts,close)=>{ctx.beginPath();let on=false;for(const q of pts){const p=cam.proj(q);if(p.z<.3){on=false;continue}on?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y);on=true}if(close)ctx.closePath();ctx.stroke()};
+  ctx.lineWidth=2;
+  for(const [r,al] of [[4.3,.5],[5.3,.35]]){ctx.strokeStyle=`hsla(${(t*360+40)%360},80%,62%,${al})`;flat(Array.from({length:49},(_,i)=>[Math.cos(i/48*TAU)*r,.01,Math.sin(i/48*TAU)*r]))}
+  ctx.strokeStyle='rgba(240,200,90,.7)';
+  for(let k=0;k<2;k++){const R=k?2.5:5,s=k?.5:1;flat([0,1,2].map(i=>{const a=Math.PI/2+i/3*TAU+(k?Math.PI:0);return[Math.cos(a)*R*s*2,.01,Math.sin(a)*R*s*2]}).map(p=>[p[0]/2*(k?1:1),p[1],p[2]/2]),true)}
+  ctx.strokeStyle=`hsla(${(t*360)%360},100%,75%,${1-t})`;ctx.lineWidth=3;
+  flat(Array.from({length:49},(_,i)=>[Math.cos(i/48*TAU)*(.5+t*10),.02,Math.sin(i/48*TAU)*(.5+t*10)]));
+
+  // glow + light shaft behind the sword
+  const g=cam.proj([0,2.4,0]),pulse=.75+.25*Math.sin(t*TAU*2);
+  ctx.globalCompositeOperation='lighter';
+  const sh=ctx.createLinearGradient(0,0,0,g.y);sh.addColorStop(0,'rgba(80,230,230,0)');sh.addColorStop(1,`rgba(80,230,230,${.16*pulse})`);
+  ctx.fillStyle=sh;ctx.fillRect(g.x-28,0,56,g.y);
+  const rg=ctx.createRadialGradient(g.x,g.y,0,g.x,g.y,140*Math.min(1.4,10/D));rg.addColorStop(0,`rgba(120,255,235,${.5*pulse})`);rg.addColorStop(1,'rgba(120,255,235,0)');
+  ctx.fillStyle=rg;ctx.fillRect(0,0,W,H);
+  ctx.globalCompositeOperation='source-over';
+
+  // depth-sorted, back-face-culled polygons
+  const vis=[];
+  for(const f of faces){
+    if(dot(f.n,sub(cam.eye,f.fc))<=0)continue;
+    const pts=f.vs.map(cam.proj);if(pts.some(p=>p.z<.5))continue;
+    const d=Math.hypot(...sub(cam.eye,f.fc))+f.bias;
+    vis.push({f,pts,d});
+  }
+  vis.sort((a,b)=>b.d-a.d);
+  ctx.lineWidth=1;ctx.lineJoin='round';
+  for(const {f,pts,d} of vis){
+    const v=norm(sub(cam.eye,f.fc)),h=norm([LIGHT[0]+v[0],LIGHT[1]+v[1],LIGHT[2]+v[2]]);
+    const sp=Math.pow(Math.max(0,dot(f.n,h)),48)*(f.col.m||0),rim=Math.pow(1-Math.max(0,dot(f.n,v)),3)*.3;
+    const k=f.col.e?1.1+.2*pulse:f.sh*(.92+.08*pulse);
+    const c2=[0,1,2].map(i=>Math.min(255,f.col[i]*k+sp*255+rim*[60,200,190][i]));
+    const s=fog(c2,d,1);
+    ctx.fillStyle=s;ctx.strokeStyle=s;ctx.beginPath();
+    pts.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.closePath();ctx.fill();ctx.stroke();
+  }
+
+  // sparkles
+  for(const p of parts){
+    const a=p.ph*TAU+t*TAU*p.m,y=((p.y0+t*p.m)%1)*5,q=cam.proj([Math.cos(a)*p.r,y+.2,Math.sin(a)*p.r]);
+    if(q.z<.5)continue;ctx.fillStyle=`hsla(${(170+p.ph*80)%360},90%,80%,${.9*Math.sin(((p.y0+t*p.m)%1)*Math.PI)})`;
+    const s=Math.max(1,Math.round(36/q.z));ctx.fillRect(q.x|0,q.y|0,s,s);
+  }
+  bloom();requestAnimationFrame(frame);
+}
+const bc=document.createElement('canvas');bc.width=160;bc.height=120;const bx=bc.getContext('2d');
+function bloom(){bx.drawImage(cv,0,0,160,120);ctx.save();ctx.globalCompositeOperation='lighter';ctx.globalAlpha=.32;ctx.filter='blur(6px)';ctx.drawImage(bc,0,0,W,H);ctx.filter='none';ctx.restore();const vg=ctx.createRadialGradient(W/2,H/2,H*.45,W/2,H/2,H*.95);vg.addColorStop(0,'rgba(0,0,0,0)');vg.addColorStop(1,'rgba(0,0,0,.55)');ctx.fillStyle=vg;ctx.fillRect(0,0,W,H)}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
